@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NMEA 轨迹配对台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="pagehead">
+  <div>
+    <h1>NMEA 轨迹配对台</h1>
+    <p class="sub">本地 NMEA-0183 文本流接收工具 · 仅处理 RMC / GGA 句子 · 先验校验和再解析 · 合成虚构数据，不接入地图服务与真实定位设备</p>
+  </div>
+  <div id="stats" class="stats"></div>
+</header>
+
+<section class="panels">
+  <div class="card">
+    <h2>配对设置</h2>
+    <label class="field">配对窗口（秒）
+      <input id="inpWindow" type="number" min="0.1" max="120" step="0.1" value="2.0">
+    </label>
+    <div class="btnrow">
+      <button id="btnApplyWindow" class="primary">应用窗口并重新配对</button>
+    </div>
+    <div class="btnrow">
+      <button id="btnFlush" class="ghost">结算当前缓冲</button>
+      <button id="btnClear" class="ghost danger">清空全部数据</button>
+    </div>
+    <p class="hint">RMC 与 GGA 的时间差 ≤ 窗口才允许配对；GGA 无日期，其日期取 RMC 日期 ±1 天中时间差最小者（跨午夜处理）。调整窗口后点"应用"会对全部已接收句子重新配对。</p>
+  </div>
+
+  <div class="card">
+    <h2>合成数据播放</h2>
+    <label class="field">场景 <select id="selScenario"></select></label>
+    <div id="scenarioDesc" class="hint"></div>
+    <div class="fieldrow">
+      <label class="field">起始日期 <input id="inpDate" type="date"></label>
+      <label class="field">速度
+        <select id="selSpeed">
+          <option value="1">1×（实时）</option>
+          <option value="5" selected>5×</option>
+          <option value="10">10×</option>
+          <option value="0">瞬时</option>
+        </select>
+      </label>
+    </div>
+    <div class="btnrow">
+      <button id="btnPlay" class="primary">播放</button>
+      <button id="btnPause" class="ghost">暂停</button>
+      <button id="btnStop" class="ghost">停止</button>
+      <button id="btnReplay" class="ghost">重放本段</button>
+    </div>
+    <div id="playInfo" class="hint">未播放。相同场景 + 相同日期生成的句子完全相同，重播会被自动去重。</div>
+  </div>
+
+  <div class="card">
+    <h2>连接模拟</h2>
+    <div id="connStatus" class="conn"></div>
+    <div class="btnrow">
+      <button id="btnDisconnect" class="ghost">断开</button>
+      <button id="btnReconnect" class="primary">重连</button>
+    </div>
+    <label class="field">自动重连（秒，0 = 手动）
+      <input id="inpAutoRe" type="number" min="0" max="60" step="1" value="0">
+    </label>
+    <label class="chk"><input id="chkResend" type="checkbox" checked> 重连时补发断连期间设备缓存的数据</label>
+    <label class="chk"><input id="chkReplayRecent" type="checkbox"> 重连时重发最近 5 秒已发送数据（演示幂等去重）</label>
+    <div id="dropInfo" class="hint"></div>
+  </div>
+
+  <div class="card">
+    <h2>手动接收</h2>
+    <textarea id="inpManual" rows="4" spellcheck="false" placeholder="粘贴 NMEA 句子，每行一句：&#10;$GPRMC,080000.0,A,3000.0000,N,12000.0000,E,5.2,90.0,151126,,,A*58&#10;$GPGGA,080000.0,3000.0000,N,12000.0000,E,1,08,1.0,50.0,M,18.5,M,,*64"></textarea>
+    <div class="btnrow">
+      <button id="btnManual" class="primary">接收文本</button>
+    </div>
+    <p class="hint">逐行接收，相同句子自动判重 —— 粘贴同一段文本两次即可验证幂等。未配对的句子留在缓冲池，可"结算当前缓冲"。</p>
+  </div>
+
+  <div class="card">
+    <h2>导出标准化轨迹</h2>
+    <div class="btnrow">
+      <button id="btnExpCsv" class="primary">轨迹 CSV</button>
+      <button id="btnExpGeo" class="primary">轨迹 GeoJSON</button>
+      <button id="btnExpLog" class="ghost">接入明细 CSV</button>
+    </div>
+    <p class="hint">轨迹按 UTC 时间排序：ISO 时间戳、十进制经纬度、海拔、航速航向、配对时间差与配对依据。接入明细导出含全部原始句子与接收时间。</p>
+  </div>
+</section>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="log" class="on">接入明细</button>
+  <button data-tab="pos">位置表 <span class="tabbadge" id="posBadge"></span></button>
+  <button data-tab="pending">待处理区 <span class="tabbadge" id="pendingBadge"></span></button>
+  <button data-tab="track">轨迹图</button>
+  <button data-tab="events">事件日志</button>
+</nav>
+
+<section id="tab-log" class="tabpage on">
+  <div class="toolbar">
+    <label class="field inline">状态过滤
+      <select id="logFilter"><option value="">全部</option></select>
+    </label>
+    <span id="logCount" class="hint"></span>
+  </div>
+  <div class="tablewrap">
+    <table id="tblLog">
+      <thead><tr><th>#</th><th>接收时刻 (UTC)</th><th>类型</th><th>状态</th><th>原始句</th><th>备注</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<section id="tab-pos" class="tabpage">
+  <div class="toolbar"><span id="posCount" class="hint"></span></div>
+  <div class="tablewrap">
+    <table id="tblPos">
+      <thead><tr>
+        <th>UTC 时间</th><th>日期</th><th>纬度 (°)</th><th>经度 (°)</th><th>海拔 (m)</th>
+        <th>航速 (kn)</th><th>航向 (°)</th><th>卫星</th><th>HDOP</th><th>位置来源</th>
+        <th>|Δt| (s)</th><th>配对依据</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<section id="tab-pending" class="tabpage">
+  <div class="toolbar"><span class="hint">缺少日期或配对超时的记录在此保留，原始句子与接收时间可查；调大配对窗口并"应用窗口并重新配对"可尝试挽回。</span></div>
+  <div class="tablewrap">
+    <table id="tblPending">
+      <thead><tr><th>句 #</th><th>类型</th><th>接收时刻 (UTC)</th><th>未配对原因</th><th>说明</th><th>原始句</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<section id="tab-track" class="tabpage">
+  <div id="trackLegend" class="legend"></div>
+  <div class="canvaswrap" id="trackWrap">
+    <canvas id="trackCanvas"></canvas>
+    <div id="trackTip" class="tooltip" hidden></div>
+  </div>
+  <p class="hint">等距圆柱投影（经度按 cos 平均纬度缩放），按日期分段着色 —— 每一天一段独立折线，不跨日连线。悬停查看逐点详情；数据表见"位置表"页。</p>
+</section>
+
+<section id="tab-events" class="tabpage">
+  <div class="tablewrap"><ul id="eventList" class="eventlist"></ul></div>
+</section>
+
+<footer class="pagefoot">
+  <p>处理规则：① 校验和（$ 与 * 之间逐字节异或）失败即拒绝；② 仅解析 RMC / GGA，其余句型忽略；③ 经纬度 ddmm.mmmm 统一换算为十进制度（S/W 为负）；④ 定位无效（RMC 状态 V / GGA 质量 0）不参与配对，单独归类；⑤ 配对窗口内时间差最小者优先，1 对 1；⑥ 完全相同的原始句只处理一次，重放不重复生成位置。</p>
+</footer>
+
+<script src="nmea-engine.js"></script>
+<script src="generator.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
